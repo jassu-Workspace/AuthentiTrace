@@ -1,56 +1,42 @@
-import os
-import hashlib
-import aiofiles
 from app.signals.base import ISignalPlugin
+from app.signals.registry import registries
 from app.schemas.verification import SignalResult
 
+
 class IntegritySignal(ISignalPlugin):
+    """Checks the file's SHA-256 against the known-malicious registry (registry/malicious_sha256.txt).
+
+    The upload step hashes the bytes it just wrote, so re-hashing the file here could never differ.
+    With an empty registry there is nothing to check, so the signal carries no weight.
+    """
+
     @property
     def name(self) -> str:
         return "IntegritySignal"
 
     async def analyze(self, media_path: str, file_hash: str) -> SignalResult:
-        # Cross-checks the file_hash against National Software Reference Library (NSRL)
-        # or known malicious deepfake hash databases.
-        
-        # Perform an actual verification that the file matches the stated hash
-        if os.path.exists(media_path):
-            hasher = hashlib.sha256()
-            async with aiofiles.open(media_path, "rb") as f:
-                while True:
-                    chunk = await f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    hasher.update(chunk)
-            actual_hash = hasher.hexdigest()
-        else:
-            actual_hash = "MISSING"
-            
-        if actual_hash != file_hash:
+        if file_hash.lower() in registries.malicious_sha256:
             return SignalResult(
                 plugin_name=self.name,
                 score=0.0,
                 confidence=1.0,
-                reasoning="CRITICAL: File integrity compromise. Provided hash does not match file contents.",
-                metadata={"expected": file_hash, "actual": actual_hash}
+                reasoning="Hash found in known malicious / explicit deepfake registry.",
+                metadata={"file_hash": file_hash, "blacklist_hit": True, "registry_loaded": True},
             )
-            
-        # Simulating blacklist check
-        blacklist_hit = file_hash.startswith("0000")
-        
-        if blacklist_hit:
-            score = 0.0
-            confidence = 1.0
-            reason = "Hash found in known malicious / explicit deepfake registry."
-        else:
-            score = 100.0
-            confidence = 0.99
-            reason = "Cryptographic integrity verified. Hash is clean."
+
+        if not registries.malicious_sha256:
+            return SignalResult(
+                plugin_name=self.name,
+                score=50.0,
+                confidence=0.0,
+                reasoning="No malicious-hash registry is loaded, so this check carries no evidence.",
+                metadata={"file_hash": file_hash, "blacklist_hit": False, "registry_loaded": False},
+            )
 
         return SignalResult(
             plugin_name=self.name,
-            score=score,
-            confidence=confidence,
-            reasoning=reason,
-            metadata={"verified_hash": actual_hash, "blacklist_hit": blacklist_hit}
+            score=100.0,
+            confidence=0.6,  # a miss only means "not already known"; uncalibrated
+            reasoning="File hash is not in the known malicious registry.",
+            metadata={"file_hash": file_hash, "blacklist_hit": False, "registry_loaded": True},
         )

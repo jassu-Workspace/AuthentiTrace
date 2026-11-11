@@ -1,0 +1,5 @@
+{
+  "false_approval_rate": 0.10,
+  "false_alarm_rate": 0.20,
+  "unsure_rate": 0.30
+}

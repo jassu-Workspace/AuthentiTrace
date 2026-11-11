@@ -1,0 +1,68 @@
+# Production-shaped stack: Postgres, Redis, API, Celery worker, web.
+# Copy .env.example to .env and set the secrets first:  docker compose up --build
+# Not tested in the environment this file was written in (no Docker daemon was available): run it once and read the logs.
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://authentitrace:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/authentitrace
+  CELERY_BROKER_URL: redis://redis:6379/0
+  API_KEYS: ${API_KEYS:?set API_KEYS, for example reviewer:long-random-key}
+  REQUIRE_API_KEYS: "true"
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000}
+  MEDIA_RETENTION_DAYS: ${MEDIA_RETENTION_DAYS:-30}
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: authentitrace
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: authentitrace
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentitrace"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  api:
+    build: ./backend
+    environment: *backend-env
+    volumes: [data:/data]   # media and the ledger anchor file: API and workers must share it
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    # Not published: callers reach the API through the web service. To call it directly, add
+    # ports: ["127.0.0.1:8000:8000"] and keep it behind your reverse proxy.
+    expose: ["8000"]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "celery", "-A", "app.celery_app", "worker", "-l", "info", "--concurrency", "2"]
+    healthcheck:
+      disable: true   # the image's HTTP health check only fits the API
+    environment: *backend-env
+    volumes: [data:/data]
+    depends_on:
+      api: {condition: service_healthy}
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ""   # empty: the browser talks to /api, which the server proxies with the key
+    environment:
+      BACKEND_URL: http://api:8000
+      BACKEND_API_KEY: ${BACKEND_API_KEY:?set BACKEND_API_KEY to one key from API_KEYS}
+    depends_on:
+      api: {condition: service_healthy}
+    ports: ["3000:3000"]
+
+volumes:
+  pgdata:
+  data:
