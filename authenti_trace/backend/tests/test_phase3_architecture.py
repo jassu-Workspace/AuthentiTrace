@@ -118,12 +118,12 @@ async def test_writers_without_a_shared_lock_do_not_fork_the_chain(factory, monk
         async with factory() as db:
             return await commit_verification(db, f"m{i}", f"h{i}", 80.0, "LOW_RISK", "APPROVE", {"w": i})
 
-    await asyncio.gather(*[writer(i) for i in range(8)])
+    await asyncio.gather(*[writer(i) for i in range(16)])
     async with factory() as db:
         audit = await audit_chain(db)
         seqs = (await db.execute(select(VerificationRecord.seq).order_by(VerificationRecord.seq))).scalars().all()
-    assert audit["ledger_intact"] is True and audit["chain_length"] == 8
-    assert seqs == list(range(1, 9))
+    assert audit["ledger_intact"] is True and audit["chain_length"] == 16
+    assert seqs == list(range(1, 17))
 
 
 # ---- migration of an old database ----

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -23,7 +24,8 @@ CURRENT_HASH_VERSION = 2
 # Serializes writers inside one process. Across processes the unique seq and
 # previous_hash columns make a second writer fail; commit_verification then retries on the new head.
 _commit_lock = asyncio.Lock()
-MAX_COMMIT_ATTEMPTS = 5
+MAX_COMMIT_ATTEMPTS = 25  # many writers can collide on one head; each loses at most a few times with the backoff below
+COMMIT_BACKOFF_SECONDS = 0.004  # random wait of up to attempt * this, so colliding writers stop retrying in lockstep
 
 # Every committed head is appended here. The audit compares the database to it, so deleting
 # the last rows is detected. Empty string disables it.
@@ -109,7 +111,7 @@ async def commit_verification(
 ) -> VerificationRecord:
     """Append one record to the hash chain and return it."""
     async with _commit_lock:
-        for _ in range(MAX_COMMIT_ATTEMPTS):
+        for attempt in range(1, MAX_COMMIT_ATTEMPTS + 1):
             head_seq, previous_hash = await _get_head(db)
             record = VerificationRecord(
                 seq=head_seq + 1,
@@ -132,6 +134,7 @@ async def commit_verification(
             except IntegrityError:
                 # Another process extended the chain first. Read the new head and try again.
                 await db.rollback()
+                await asyncio.sleep(random.uniform(0, COMMIT_BACKOFF_SECONDS * attempt))
                 continue
             except SQLAlchemyError:
                 await db.rollback()
