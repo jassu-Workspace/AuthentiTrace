@@ -1,0 +1,2 @@
+# boto3 is already in the dev environment; pin it here for S3 installs
+boto3==1.43.87

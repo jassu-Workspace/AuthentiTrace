@@ -1,3 +1,10 @@
+[CmdletBinding()]
+param(
+    [switch]$BackendOnly,
+    [switch]$FrontendOnly,
+    [switch]$NoBrowser
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -7,4 +14,4 @@ if (-not (Test-Path $projectScript)) {
     throw "Target script not found: $projectScript"
 }
 
-& $projectScript
+& $projectScript @PSBoundParameters

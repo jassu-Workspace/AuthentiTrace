@@ -1,348 +1,55 @@
 # AuthentiTrace
 
-Multi-signal media authenticity verification with explainable scoring and a tamper-evident ledger.
+Checks whether uploaded media (image, video, audio) is likely authentic, and records each verdict in a hash-chained ledger so later edits are detectable.
 
-This README is intentionally comprehensive and documents the whole AuthentiTrace system (backend + frontend), even though the file lives in the frontend folder.
+**Status:** prototype. Detection is rule-based (no trained model yet) and scores are not calibrated. Do not use the verdict as proof. See the plan below.
 
-## Table of Contents
+## How it works
+1. `POST /api/v1/jobs/` saves the file, computes its SHA-256 and returns `202` with a job id. Poll `GET /api/v1/jobs/{id}`; when `done` it carries the report id. (`POST /api/v1/upload/` is the older blocking version; the UI still uses it until Phase 5.)
+2. Five signal plugins score the file in worker threads, each with a timeout: Content, Reality, Behavioral, Network, Integrity.
+3. A scoring engine combines them into a trust score, a risk category and an action (`APPROVE`, `FLAG`, `RESTRICT`, or `MANUAL_REVIEW` when no signal has evidence).
+4. The result is appended to a SQLite ledger. Each row has a sequence number, and its hash covers the previous row, its time and the pipeline versions. Every new head is also written to an anchor file.
+5. `GET /api/v1/reports/{id}` returns a report. `GET /api/v1/dashboard/audit` re-walks the chain and compares it with the anchor file, so edited, missing or truncated rows are reported.
 
-1. [What AuthentiTrace Does](#what-authentitrace-does)
-2. [System Architecture](#system-architecture)
-3. [Repository Layout](#repository-layout)
-4. [Trust Scoring Model](#trust-scoring-model)
-5. [Risk and Enforcement Policy](#risk-and-enforcement-policy)
-6. [API Reference](#api-reference)
-7. [Quick Start](#quick-start)
-8. [Manual Setup](#manual-setup)
-9. [Frontend Configuration](#frontend-configuration)
-10. [Testing](#testing)
-11. [Security Notes](#security-notes)
-12. [Current Constraints and Production Roadmap](#current-constraints-and-production-roadmap)
-13. [Troubleshooting](#troubleshooting)
-
-## What AuthentiTrace Does
-
-AuthentiTrace is a trust infrastructure for digital media. A file upload goes through five independent signal analyzers, receives a weighted trust score, and is written to a cryptographically chained ledger so historical tampering can be detected.
-
-Core outcomes per verification:
-
-- A numeric trust score (`0.00` to `100.00`)
-- A risk category (`LOW_RISK`, `MEDIUM_RISK`, `HIGH_RISK`)
-- An enforcement action (`APPROVE`, `FLAG`, `RESTRICT`)
-- Full signal telemetry for explainability
-- A ledger receipt (`previous_hash`, `current_hash`) for auditability
-
-## System Architecture
-
-```mermaid
-flowchart TD
-		A[Frontend Upload UI] --> B[POST /api/v1/upload]
-		B --> C[Validate MIME + Size]
-		C --> D[Stream File to Storage + SHA-256]
-		D --> E[Run 5 Signal Plugins Concurrently]
-		E --> F[Confidence-Aware Weighted Scoring]
-		F --> G[Ledger Commit with Hash Chaining]
-		G --> H[Report Response]
-		H --> I[Frontend Report Page]
-		I --> J[Dashboard Metrics and Ledger Audit]
-```
-
-Backend stack:
-
-- FastAPI
-- SQLAlchemy async ORM
-- SQLite (`aiosqlite`)
-- Pydantic v2
-
-Frontend stack:
-
-- Next.js 16 (App Router)
-- React 19
-- TypeScript
-
-## Repository Layout
-
-```text
-authenti_trace/
-	backend/
-		app/
-			main.py
-			api/v1/endpoints/
-				upload.py
-				reports.py
-				dashboard.py
-			services/
-				media_service.py
-				verification_service.py
-				scoring_engine.py
-				ledger_service.py
-			signals/
-				base.py
-				content.py
-				reality.py
-				behavioral.py
-				network.py
-				integrity.py
-			models/ledger.py
-			schemas/verification.py
-			database/database.py
-			utils/security.py
-		tests/test_ledger.py
-		requirements.txt
-	frontend/
-		src/app/
-			layout.tsx
-			page.tsx
-			upload/page.tsx
-			report/[id]/page.tsx
-			dashboard/page.tsx
-			globals.css
-		src/lib/api.ts
-		package.json
-		next.config.ts
-```
-
-## Trust Scoring Model
-
-Signal plugins currently active:
-
-1. `ContentSignal`
-2. `RealitySignal`
-3. `BehavioralSignal`
-4. `NetworkSignal`
-5. `IntegritySignal`
-
-Each plugin returns:
-
-- `score` in range `0..100`
-- `confidence` in range `0..1`
-- `reasoning`
-- `metadata`
-
-Static signal weights:
-
-- `ContentSignal`: `1.5`
-- `RealitySignal`: `1.0`
-- `BehavioralSignal`: `1.2`
-- `NetworkSignal`: `0.8`
-- `IntegritySignal`: `1.3`
-
-Scoring formula:
-
-```text
-effective_weight_i = base_weight_i * confidence_i
-trust_score = sum(score_i * effective_weight_i) / sum(effective_weight_i)
-```
-
-Critical failure gate:
-
-- If any signal has `score < 10` and `confidence > 0.9`, final score is capped at `20.0`.
-
-Ledger hashing model:
-
-```text
-current_hash = SHA256(previous_hash + "|" + canonical_json(payload))
-```
-
-Payload includes:
-
-- media id
-- file hash
-- score (fixed to 2 decimals)
-- risk
-- action
-- telemetry
-
-## Risk and Enforcement Policy
-
-- `score < 40`: `HIGH_RISK` + `RESTRICT`
-- `40 <= score < 75`: `MEDIUM_RISK` + `FLAG`
-- `score >= 75`: `LOW_RISK` + `APPROVE`
-
-## API Reference
-
-Base URL (default local):
-
-```text
-http://localhost:8000
-```
-
-### 1) Upload and Verify
-
-- Method: `POST`
-- Path: `/api/v1/upload/`
-- Content type: `multipart/form-data`
-- Field: `file`
-
-Validation rules:
-
-- Allowed MIME types: `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `audio/mpeg`
-- Max file size: `50 MB`
-
-Returns full `ReportResponse` object, including telemetry and ledger hashes.
-
-### 2) Fetch Report
-
-- Method: `GET`
-- Path: `/api/v1/reports/{ledger_id}`
-
-Returns a single ledger-backed verification report.
-
-### 3) Dashboard Metrics
-
-- Method: `GET`
-- Path: `/api/v1/dashboard/metrics`
-
-Returns:
-
-- `total_verifications`
-- `risk_distribution` (`LOW_RISK`, `MEDIUM_RISK`, `HIGH_RISK`)
-
-### 4) Ledger Audit
-
-- Method: `GET`
-- Path: `/api/v1/dashboard/audit`
-
-Returns:
-
-- `ledger_intact`
-- `chain_length`
-- `errors` (hash mismatch details)
-
-## Quick Start
-
-### Option A (Windows one-command startup)
-
-From the workspace root (`DTI Code Base`):
-
-```powershell
-.\s.ps1
-```
-
-This delegates to `authenti_trace/s.ps1`, which:
-
-- Starts backend on `http://127.0.0.1:8000`
-- Starts frontend on `http://localhost:3000`
-- Opens the browser automatically
-
-### Option B (manual, recommended for development)
-
-Use two terminals.
-
-## Manual Setup
-
-### 1) Backend
-
-```powershell
+## Run it
+Backend (Python):
+```bash
 cd authenti_trace/backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m pip install -r requirements-dev.txt
+python -m pytest -q   # use --basetemp=.pytest_tmp if Windows temp cleanup fails
+python -m uvicorn app.main:app --reload --port 8000
 ```
-
-### 2) Frontend
-
-```powershell
+Frontend (Node):
+```bash
 cd authenti_trace/frontend
 npm install
 npm run dev
 ```
+Both on Windows: `authenti_trace/s.ps1`.
 
-Open:
+## Configuration
+| Variable | Used by | Default |
+|---|---|---|
+| `DATABASE_URL` | backend | `sqlite+aiosqlite:///<backend>/authentitrace.db` |
+| `STORAGE_DIR` | backend | `<backend>/storage` |
+| `CORS_ALLOW_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` |
+| `LEDGER_ANCHOR_PATH` | backend | `<backend>/ledger_anchor.jsonl` (empty disables). Delete it together with the database. |
+| `MEDIA_RETENTION_DAYS` | backend | `0` (keep forever). Set `30` or your policy in production. |
+| `SIGNAL_TIMEOUT_SECONDS` | backend | `60` |
+| `JOB_MAX_ATTEMPTS` | backend | `2` |
+| `NEXT_PUBLIC_API_URL` | frontend | `http://127.0.0.1:8000` in dev; relative paths in production if unset |
 
-- Frontend: `http://localhost:3000`
-- API docs (Swagger): `http://localhost:8000/docs`
+## Database
+Schema changes are Alembic migrations in `backend/alembic/versions`. The API applies them at startup. Manual: `cd backend && python -m alembic upgrade head`. Old databases are upgraded in place (old rows keep their original hashes, `hash_version` 1).
 
-## Frontend Configuration
+Re-score stored media under the current pipeline version (appends new rows, never edits old ones): `python -m app.services.rescore`.
 
-The frontend API base URL is controlled by:
+## Layout
+- `authenti_trace/backend/app` — API, services, signal plugins, ledger.
+- `authenti_trace/frontend/src` — Next.js pages and API helper.
+- `authenti_trace/docs/plan` — master plan, phases 0-6, status.
+- `authenti_trace/docs/archive` — old documents. They describe a stack that is not built.
+- `authenti_trace/CLAUDE.md` — goals, targets and working rules.
 
-```text
-NEXT_PUBLIC_API_URL
-```
-
-If omitted, frontend defaults to:
-
-```text
-http://localhost:8000
-```
-
-Set in `authenti_trace/frontend/.env.local`:
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
-
-## Testing
-
-Current automated tests focus on ledger correctness and tamper detection.
-
-Run backend tests:
-
-```powershell
-cd authenti_trace/backend
-pytest -q
-```
-
-What is covered now:
-
-- Genesis hash behavior
-- Correct hash chain linking across commits
-- Tamper detection when row data is modified post-write
-
-## Security Notes
-
-Implemented today:
-
-- Upload MIME allowlist
-- Upload size cap (`50 MB`)
-- Streaming hash generation on ingest
-- Integrity signal recomputes SHA-256 against stored file
-- Tamper-evident hash chain with audit endpoint
-- CORS restricted to local frontend origins
-
-Not implemented yet:
-
-- Authentication/authorization on API routes
-- Binary signature verification (content-type spoof resistance)
-- Request rate limiting
-- Production-grade secret management
-
-## Current Constraints and Production Roadmap
-
-Current constraints:
-
-- SQLite is good for local/dev but not ideal for high-concurrency writes
-- Signal logic is deterministic/mock-oriented today (designed for real model/service swap-in)
-- Verification runs inline in request lifecycle (no async job queue)
-
-High-priority roadmap:
-
-1. Replace SQLite with PostgreSQL and stronger transaction/locking strategy.
-2. Introduce authN/authZ and rate limiting.
-3. Replace simulated signal internals with production services/models.
-4. Add queue-based verification workers for large media and throughput scaling.
-5. Expand tests to endpoint, scoring-boundary, and end-to-end coverage.
-
-## Troubleshooting
-
-### Frontend cannot reach backend
-
-- Confirm backend is running on `127.0.0.1:8000` or `localhost:8000`.
-- Verify `NEXT_PUBLIC_API_URL` if you changed ports/hosts.
-- Confirm CORS origin matches frontend host (`localhost:3000` or `127.0.0.1:3000`).
-
-### Upload rejected
-
-- Check file type matches allowed MIME set.
-- Check file size is under `50 MB`.
-
-### Ledger audit reports tampering
-
-- Call `GET /api/v1/dashboard/audit` and inspect `errors`.
-- Any mismatch means row content and stored hash chain no longer align.
-
----
-
-AuthentiTrace is built for explainability first: every trust decision is traceable, inspectable, and cryptographically auditable.
+## Roadmap
+See `authenti_trace/docs/plan/00-MASTER-PLAN.md` and `authenti_trace/docs/plan/STATUS.md`.

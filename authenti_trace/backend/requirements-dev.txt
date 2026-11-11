@@ -1,0 +1,10 @@
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+onnx==1.22.0
+onnxruntime==1.28.0
+moto==5.2.5
+boto3==1.43.87
+asyncpg==0.32.0
+c2pa-python==0.38.0

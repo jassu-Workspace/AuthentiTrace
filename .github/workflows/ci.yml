@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: authenti_trace/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: authenti_trace/backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt ruff
+      - run: ruff check app alembic tests eval --select F
+      - run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: authenti_trace/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: authenti_trace/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  # Quality gate: fails when the saved thresholds are exceeded on the validation split.
+  # Runs only when a dataset manifest and eval/thresholds.json exist (they are created in Phase 2/4 with real data).
+  # The dataset itself is not in git (eval/data is ignored): point DATA_URL at storage you control.
+  eval-gate:
+    runs-on: ubuntu-latest
+    needs: backend
+    if: vars.EVAL_DATA_URL != ''
+    defaults:
+      run:
+        working-directory: authenti_trace/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Fetch dataset
+        run: |
+          mkdir -p eval/data
+          curl -fsSL "${{ vars.EVAL_DATA_URL }}" -o data.tgz
+          tar -xzf data.tgz -C eval/data
+      - run: python -m eval.run_eval --manifest eval/data/manifest.csv --split val --thresholds eval/thresholds.json

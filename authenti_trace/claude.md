@@ -34,22 +34,20 @@ The product value is the combination: a verdict plus a tamper-evident record of 
 
 ## 2. Where the project is today
 
-### What exists
-- **Backend:** FastAPI, SQLAlchemy async, SQLite (`aiosqlite`). Endpoints: `POST /api/v1/upload/`, `GET /api/v1/reports/{id}`, `GET /api/v1/dashboard/metrics`, `GET /api/v1/dashboard/audit`.
-- **Signals:** `ContentSignal` (error-level analysis, noise, frequency), `RealitySignal` (EXIF, AI-software names, C2PA byte sniffing), `BehavioralSignal` (focus and video pulse checks), `NetworkSignal` (perceptual hash vs an empty registry), `IntegritySignal` (hash check plus an empty blacklist).
-- **Scoring:** confidence-weighted average. A signal with score under 10 and confidence over 0.9 caps the total at 20. Thresholds: under 40 = `RESTRICT`, under 75 = `FLAG`, else `APPROVE`.
-- **Ledger:** SHA-256 chain over media ID, file hash, score, risk, action and telemetry. Single in-process lock.
-- **Frontend:** Next.js 16.1.6, React 19.2.3, TypeScript 5. Pages: landing, upload, report, dashboard.
-- **Tests:** `tests/test_ledger.py`, `tests/test_forensic_signals.py`.
+### What exists (after phases 0-6; see docs/plan/STATUS.md and docs/HANDOFF.md)
+- **Backend:** FastAPI, SQLAlchemy async with Alembic migrations, SQLite by default or Postgres (`DATABASE_URL`, untested on real Postgres), Celery + Redis workers when `CELERY_BROKER_URL` is set (otherwise an in-process runner), local or S3 media store.
+- **Endpoints:** `/api/v1/jobs` (202 + polling), `/upload` (older blocking call), `/reports/{id}`, `/reports/{id}/proof`, `/reports/by-hash/{hash}`, `/reviews`, `/dashboard/{metrics,audit,quality}`, `/ops/metrics`, public `/health`. API keys (`API_KEYS`) and rate limits on everything except `/health`.
+- **Signals:** Content, Reality (real C2PA check), Behavioral, Network, Integrity, plus an optional ONNX detector (`IMAGE_MODEL_PATH`). A signal with no evidence has confidence 0. The scoring engine abstains (MANUAL_REVIEW) on too little evidence or strong disagreement. Limits are uncalibrated placeholders.
+- **Ledger:** `seq`, versioned hash (v2), unique seq/previous_hash fork guard, anchor file (deleted-tail detection), review decisions as new rows, backup/restore tool.
+- **Frontend:** Next.js 16 with job-status upload, plain-language report, review queue, verify page, quality dashboard, and an `/api` server proxy that adds the key. No user login yet.
+- **Measurement:** `backend/eval` (metrics, locked splits, attacks, calibration and fusion fitting). No labeled data yet, so no baseline.
+- **Ops:** Dockerfiles, docker-compose (never run), CI workflow, runbooks in `docs/runbooks`.
+- **Tests:** 135 backend tests; frontend lint, tsc and build clean.
 
-### What is weak (honest status)
-- Detection is hand-tuned heuristics. No trained model. No labeled data. Scores are not calibrated.
-- Two of the "registries" are empty sets. `NetworkSignal` always says "clean". Integrity cannot fail.
-- A stripped-metadata fake can land on `APPROVE`. Video and audio get a neutral pass.
-- Analysis runs inside the web request and blocks the server.
-- The ledger lock works in one process only. Deleted tail rows are not detected.
-- Uploaded media and the `.db` files were committed to git. No `.gitignore`.
-- Old docs mention Celery, Redis, pgvector, ONNX. None of these are in use. Do not trust those docs.
+### What is still weak
+- Detection is rule-based unless a model is configured; a fake with stripped metadata can still be approved. No labeled data, no measured error rates, scores uncalibrated.
+- Registries are empty. Video and audio have no detector (they go to human review).
+- The web app has no user login (see docs/plan/security-review.md, finding 1).
 
 ### Scores at the start of the plan (out of 100, excluding Docker, auth and rate limiting)
 | Area | Start |

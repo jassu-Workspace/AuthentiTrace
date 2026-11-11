@@ -1,8 +1,8 @@
 import './globals.css'
-import Link from 'next/link'
 import { ReactNode } from 'react'
 import type { Metadata } from 'next'
 import { Fraunces, Manrope } from 'next/font/google'
+import { SiteHeader } from '@/components/SiteHeader'
 
 const displayFont = Fraunces({
   subsets: ['latin'],
@@ -32,19 +32,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <span className="site-glow site-glow-two" />
         </div>
 
-        <header className="site-header">
-          <div className="site-header-inner">
-            <Link href="/" className="brand-mark" aria-label="AuthentiTrace home">
-              <span className="brand-dot" aria-hidden="true" />
-              <span>AuthentiTrace</span>
-            </Link>
-
-            <nav className="site-nav" aria-label="Primary">
-              <Link href="/upload" className="site-nav-link">Verify Media</Link>
-              <Link href="/dashboard" className="site-nav-link">Dashboard</Link>
-            </nav>
-          </div>
-        </header>
+        <SiteHeader />
 
         {children}
       </body>

@@ -1,0 +1,27 @@
+# User media and local databases: never commit
+storage/
+backend/storage/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp*/
+.venv/
+venv/
+
+# Tooling output
+graphify-out/
+outputs/
+**/eval/data/
+**/eval/results/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Ledger anchor (runtime file; delete it together with the database)
+ledger_anchor.jsonl
